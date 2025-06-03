@@ -1340,7 +1340,12 @@ declare_lint! {
     "unnecessary braces around an expression"
 }
 
-declare_lint_pass!(UnusedBraces => [UNUSED_BRACES]);
+#[derive(Default)]
+pub(crate) struct UnusedBraces {
+    block_as_value: bool,
+}
+
+impl_lint_pass!(UnusedBraces => [UNUSED_BRACES]);
 
 impl UnusedDelimLint for UnusedBraces {
     const DELIM_STR: &'static str = "braces";
@@ -1369,7 +1374,10 @@ impl UnusedDelimLint for UnusedBraces {
                 //
                 // - the block does not have a label
                 // - the block is not `unsafe`
-                // - the block contains exactly one expression (do not lint `{ expr; }`)
+                // - the block contains exactly one expression
+                //   - do not lint `{ expr; }`
+                //   - do not lint `{ return }` if block is used as value by other
+                //     expressions, e.g. `return` and `match`, which may cause false positive.
                 // - `followed_by_block` is true and the internal expr may contain a `{`
                 // - the block is not multiline (do not lint multiline match arms)
                 //      ```
@@ -1399,6 +1407,7 @@ impl UnusedDelimLint for UnusedBraces {
                             && value.attrs.is_empty()
                             && !value.span.from_expansion()
                             && !inner.span.from_expansion()
+                            && !(self.block_as_value && matches!(expr.kind, ast::ExprKind::Ret(_)))
                         {
                             self.emit_unused_delims_expr(cx, value, ctx, left_pos, right_pos, is_kw)
                         }
@@ -1428,6 +1437,12 @@ impl EarlyLintPass for UnusedBraces {
 
     #[inline]
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
+        use rustc_ast::ast::ExprKind::*;
+        self.block_as_value = match e.kind {
+            Ret(Some(ref expr)) | Match(ref expr, ..) if matches!(expr.kind, Block(..)) => true,
+            _ => false,
+        };
+
         <Self as UnusedDelimLint>::check_expr(self, cx, e);
 
         if let ExprKind::Repeat(_, ref anon_const) = e.kind {
